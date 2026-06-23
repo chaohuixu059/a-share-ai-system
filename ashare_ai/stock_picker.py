@@ -13,15 +13,25 @@ def _contains_sector_keyword(snapshot: dict, keywords: list[str]) -> bool:
     return any(keyword and keyword in text for keyword in keywords)
 
 
+def _safe_float(value: object, default: float = 0.0) -> float:
+    try:
+        number = float(value)
+    except Exception:
+        return default
+    if number != number:  # NaN
+        return default
+    return number
+
+
 def score_stock(snapshot: dict, sector_keywords: list[str] | None = None, sector_boost: float = 0.0) -> float:
-    ret_5d = float(snapshot.get("ret_5d", 0.0) or 0.0)
-    ret_20d = float(snapshot.get("ret_20d", 0.0) or 0.0)
-    vol_ratio = float(snapshot.get("vol_ratio", 1.0) or 1.0)
-    rsi = float(snapshot.get("rsi14", 50.0) or 50.0)
-    ma5 = float(snapshot.get("ma5", 0.0) or 0.0)
-    ma10 = float(snapshot.get("ma10", 0.0) or 0.0)
-    ma20 = float(snapshot.get("ma20", 0.0) or 0.0)
-    close = float(snapshot.get("close", 0.0) or 0.0)
+    ret_5d = _safe_float(snapshot.get("ret_5d", 0.0), 0.0)
+    ret_20d = _safe_float(snapshot.get("ret_20d", 0.0), 0.0)
+    vol_ratio = _safe_float(snapshot.get("vol_ratio", 1.0), 1.0)
+    rsi = _safe_float(snapshot.get("rsi14", 50.0), 50.0)
+    ma5 = _safe_float(snapshot.get("ma5", 0.0), 0.0)
+    ma10 = _safe_float(snapshot.get("ma10", 0.0), 0.0)
+    ma20 = _safe_float(snapshot.get("ma20", 0.0), 0.0)
+    close = _safe_float(snapshot.get("close", 0.0), 0.0)
 
     trend_bonus = 0.0
     if close > 0:
@@ -65,6 +75,8 @@ def pick_stocks(feature_table: list[dict], top_n: int = 5, sector_keywords: list
         enriched = dict(item)
         enriched["picker_score"] = score_stock(item, sector_keywords=sector_keywords, sector_boost=sector_boost)
         enriched["picker_reasons"] = explain_stock(item, sector_keywords=sector_keywords)
+        enriched["sector_hit"] = bool(sector_keywords and _contains_sector_keyword(item, sector_keywords))
+        enriched["risk_tags"] = build_risk_tags(item)
         rows.append(enriched)
 
     ranked = sorted(rows, key=lambda item: item["picker_score"], reverse=True)
@@ -87,5 +99,29 @@ def export_picks_csv(picked_stocks: list[dict], output_path: Path) -> None:
     frame = pd.DataFrame(picked_stocks).copy()
     if "picker_reasons" in frame.columns:
         frame["picker_reasons"] = frame["picker_reasons"].apply(lambda values: "、".join(values) if isinstance(values, list) else str(values))
+    if "risk_tags" in frame.columns:
+        frame["risk_tags"] = frame["risk_tags"].apply(lambda values: "、".join(values) if isinstance(values, list) else str(values))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     frame.to_csv(output_path, index=False, encoding="utf-8-sig")
+
+
+def build_risk_tags(snapshot: dict) -> list[str]:
+    tags: list[str] = []
+    ret_5d = _safe_float(snapshot.get("ret_5d", 0.0), 0.0)
+    ret_20d = _safe_float(snapshot.get("ret_20d", 0.0), 0.0)
+    rsi = _safe_float(snapshot.get("rsi14", 50.0), 50.0)
+    vol_ratio = _safe_float(snapshot.get("vol_ratio", 1.0), 1.0)
+
+    if ret_5d < -0.05:
+        tags.append("短线偏弱")
+    if ret_20d < -0.08:
+        tags.append("中期偏弱")
+    if rsi > 80:
+        tags.append("超买")
+    if rsi < 35:
+        tags.append("超跌")
+    if vol_ratio < 0.8:
+        tags.append("缩量")
+    if not tags:
+        tags.append("常规")
+    return tags

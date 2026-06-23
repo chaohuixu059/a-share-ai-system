@@ -99,8 +99,10 @@ def build_pick_report(picked_stocks: list[dict]) -> str:
     lines = ["## 选股结果", ""]
     for item in picked_stocks:
         reasons = "、".join(item.get("picker_reasons", []))
+        risk_tags = "、".join(item.get("risk_tags", []))
         lines.append(
             f"- {item['symbol']} {item['name']} | 评分 {item.get('picker_score', 0):.2f} | "
-            f"收盘 {item['close']} | 5日 {item['ret_5d']:.2%} | 20日 {item['ret_20d']:.2%} | 理由：{reasons}"
+            f"收盘 {item['close']} | 5日 {item['ret_5d']:.2%} | 20日 {item['ret_20d']:.2%} | "
+            f"风险：{risk_tags} | 理由：{reasons}"
         )
     return "\n".join(lines)
