@@ -27,6 +27,11 @@ class Settings:
     data_retry_min_seconds: float
     data_retry_max_seconds: float
     data_use_baostock: bool
+    universe_mode: str
+    preferred_sector_keywords: list[str]
+    sector_boost: float
+    pick_top_n: int
+    pick_export_csv: Path
 
 
 def _split_watchlist(raw: str) -> list[str]:
@@ -38,8 +43,10 @@ def load_settings() -> Settings:
     watchlist_file = Path(os.getenv("WATCHLIST_FILE", "watchlist.txt")).expanduser()
     output_dir = Path(os.getenv("OUTPUT_DIR", "outputs")).expanduser()
     data_cache_dir = Path(os.getenv("DATA_CACHE_DIR", "cache")).expanduser()
+    pick_export_csv = Path(os.getenv("PICK_EXPORT_CSV", "outputs/picked_stocks.csv")).expanduser()
     raw_watchlist = os.getenv("WATCHLIST", "")
     watchlist = _split_watchlist(raw_watchlist)
+    preferred_sector_keywords = _split_watchlist(os.getenv("PREFERRED_SECTOR_KEYWORDS", "科技,电子,半导体,算力,AI,软件,芯片,通信,消费电子,光模块"))
     if not watchlist and watchlist_file.exists():
         watchlist = [line.strip() for line in watchlist_file.read_text(encoding="utf-8").splitlines() if line.strip()]
 
@@ -64,4 +71,9 @@ def load_settings() -> Settings:
         data_retry_min_seconds=float(os.getenv("DATA_RETRY_MIN_SECONDS", "2")),
         data_retry_max_seconds=float(os.getenv("DATA_RETRY_MAX_SECONDS", "5")),
         data_use_baostock=os.getenv("DATA_USE_BAOSTOCK", "true").strip().lower() in {"1", "true", "yes", "y", "on"},
+        universe_mode=os.getenv("UNIVERSE_MODE", "full").strip().lower(),
+        preferred_sector_keywords=preferred_sector_keywords,
+        sector_boost=float(os.getenv("SECTOR_BOOST", "8")),
+        pick_top_n=int(os.getenv("PICK_TOP_N", "10")),
+        pick_export_csv=pick_export_csv,
     )

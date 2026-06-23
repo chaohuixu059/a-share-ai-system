@@ -76,6 +76,13 @@ python main.py --mode backtest
 - `DATA_MAX_RETRIES`、`DATA_RETRY_MIN_SECONDS`、`DATA_RETRY_MAX_SECONDS` 用来控制重试和随机退避
 - `DATA_USE_BAOSTOCK=true` 时会在 AkShare 全部失败后自动切换到 BaoStock 备用源
 
+## 选股策略
+
+- 默认支持全市场候选池
+- `PREFERRED_SECTOR_KEYWORDS` 会给科技、电子、半导体等偏好板块加分
+- `PICK_TOP_N` 控制最终展示的候选数量
+- `PICK_EXPORT_CSV` 会把候选股导出成单独的 CSV 文件，便于你直接查看
+
 ## 你可以继续加的能力
 
 - 财经新闻抓取

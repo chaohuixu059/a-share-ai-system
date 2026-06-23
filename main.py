@@ -13,7 +13,7 @@ from ashare_ai.config import load_settings
 from ashare_ai.fetchers import build_market_samples, load_watchlist, select_symbols, fetch_daily_history
 from ashare_ai.notify import send_email, send_webhook
 from ashare_ai.reports import build_local_report, build_pick_report, build_summary_block, ensure_day_dir, write_json, write_text
-from ashare_ai.stock_picker import pick_stocks
+from ashare_ai.stock_picker import pick_stocks, export_picks_csv
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,7 +40,10 @@ def main() -> int:
     day_dir = ensure_day_dir(settings.output_dir, today.isoformat())
 
     watchlist = load_watchlist(settings.watchlist_file, settings.watchlist)
-    symbols = select_symbols(watchlist, args.limit or settings.universe_limit)
+    if settings.universe_mode == "watchlist" and watchlist:
+        symbols = select_symbols(watchlist, args.limit or settings.universe_limit)
+    else:
+        symbols = select_symbols([], args.limit or settings.universe_limit)
 
     snapshots, failures = build_market_samples(
         symbols,
@@ -53,7 +56,13 @@ def main() -> int:
         use_baostock=settings.data_use_baostock,
     )
     feature_table = sorted(snapshots, key=lambda item: item["score"], reverse=True)
-    picked_stocks = pick_stocks(feature_table, top_n=min(5, len(feature_table)))
+    picked_stocks = pick_stocks(
+        feature_table,
+        top_n=min(settings.pick_top_n, len(feature_table)),
+        sector_keywords=settings.preferred_sector_keywords,
+        sector_boost=settings.sector_boost,
+    )
+    export_picks_csv(picked_stocks, settings.pick_export_csv)
 
     market_summary = {
         "date": today.isoformat(),
@@ -66,6 +75,8 @@ def main() -> int:
         "summary_block": build_summary_block(feature_table),
         "pick_report": build_pick_report(picked_stocks),
         "fallback_note": "若单个标的抓取失败，系统会自动跳过并继续生成日报。",
+        "universe_mode": settings.universe_mode,
+        "pick_export_csv": str(settings.pick_export_csv),
     }
 
     write_json(day_dir / "market_summary.json", {"market_summary": market_summary, "feature_table": feature_table, "picked_stocks": picked_stocks})
@@ -144,6 +155,7 @@ def main() -> int:
         report = build_local_report(market_summary, feature_table, backtest_summary, failures)
     if picked_stocks:
         report = report + "\n\n" + build_pick_report(picked_stocks)
+    report = report + f"\n\n## 导出文件\n\n- 候选股 CSV: `{settings.pick_export_csv}`"
     report_path = day_dir / "daily_report.md"
     write_text(report_path, report)
 
