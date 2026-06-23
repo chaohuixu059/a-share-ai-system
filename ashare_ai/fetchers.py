@@ -74,6 +74,7 @@ def _normalize_history_frame(df: pd.DataFrame) -> pd.DataFrame:
         "最高": "high",
         "最低": "low",
         "成交量": "volume",
+        "vol": "volume",
         "成交额": "amount",
         "换手率": "turnover",
     }
@@ -84,7 +85,17 @@ def _normalize_history_frame(df: pd.DataFrame) -> pd.DataFrame:
     for col in ["open", "close", "high", "low", "volume", "amount", "turnover"]:
         if col in out.columns:
             out[col] = pd.to_numeric(out[col], errors="coerce")
+    if "volume" not in out.columns:
+        out["volume"] = 0.0
     return out.sort_values("date").reset_index(drop=True)
+
+
+def _normalize_baostock_code(symbol: str) -> str:
+    clean = symbol.strip().lower().replace(".", "")
+    if clean.startswith("sh") or clean.startswith("sz"):
+        clean = clean[2:]
+    market = "sh" if clean.startswith("6") else "sz"
+    return f"{market}.{clean}"
 
 
 def _with_fallbacks(label: str, loaders: list[tuple[str, Callable[[], pd.DataFrame]]]) -> tuple[pd.DataFrame, str]:
@@ -110,7 +121,7 @@ def _load_daily_history_from_baostock(symbol: str, start_date: str, end_date: st
 
     bs.login()
     try:
-        bs_code = symbol if symbol.startswith(("sh.", "sz.")) else (f"sh.{symbol}" if symbol.startswith("6") else f"sz.{symbol}")
+        bs_code = _normalize_baostock_code(symbol)
         rs = bs.query_history_k_data_plus(
             bs_code,
             "date,open,high,low,close,volume,amount",

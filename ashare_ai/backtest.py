@@ -31,6 +31,7 @@ def backtest_ma_volume_strategy(df: pd.DataFrame) -> dict:
     position = False
     entry_price = 0.0
     entry_idx = -1
+    volume_col = "volume" if "volume" in frame.columns else ("vol" if "vol" in frame.columns else None)
 
     for i in range(20, len(frame) - 1):
         prev = frame.iloc[i - 1]
@@ -41,7 +42,10 @@ def backtest_ma_volume_strategy(df: pd.DataFrame) -> dict:
             prev["ma5"] > prev["ma20"]
             and prev_prev["ma5"] <= prev_prev["ma20"]
         )
-        vol_expand = bool(prev["volume"] > 2 * prev["vol_ma5"]) if pd.notna(prev["vol_ma5"]) else False
+        if volume_col is None:
+            vol_expand = False
+        else:
+            vol_expand = bool(prev[volume_col] > 2 * prev["vol_ma5"]) if pd.notna(prev["vol_ma5"]) else False
 
         if not position and cross_up and vol_expand:
             position = True
