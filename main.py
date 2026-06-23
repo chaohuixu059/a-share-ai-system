@@ -12,7 +12,7 @@ from ashare_ai.backtest import backtest_ma_volume_strategy
 from ashare_ai.config import load_settings
 from ashare_ai.fetchers import build_market_samples, load_watchlist, select_symbols, fetch_daily_history
 from ashare_ai.notify import send_email, send_webhook
-from ashare_ai.reports import build_summary_block, ensure_day_dir, write_json, write_text
+from ashare_ai.reports import build_local_report, build_summary_block, ensure_day_dir, write_json, write_text
 
 
 def parse_args() -> argparse.Namespace:
@@ -41,7 +41,16 @@ def main() -> int:
     watchlist = load_watchlist(settings.watchlist_file, settings.watchlist)
     symbols = select_symbols(watchlist, args.limit or settings.universe_limit)
 
-    snapshots, failures = build_market_samples(symbols, start_date, end_date)
+    snapshots, failures = build_market_samples(
+        symbols,
+        start_date,
+        end_date,
+        cache_dir=settings.data_cache_dir,
+        max_retries=settings.data_max_retries,
+        retry_min_seconds=settings.data_retry_min_seconds,
+        retry_max_seconds=settings.data_retry_max_seconds,
+        use_baostock=settings.data_use_baostock,
+    )
     feature_table = sorted(snapshots, key=lambda item: item["score"], reverse=True)
 
     market_summary = {
@@ -61,7 +70,16 @@ def main() -> int:
     if args.mode == "backtest":
         backtest_symbol = args.symbol or (symbols[0][0] if symbols else "600519")
         try:
-            hist = fetch_daily_history(backtest_symbol, start_date, end_date)
+            hist = fetch_daily_history(
+                backtest_symbol,
+                start_date,
+                end_date,
+                cache_dir=settings.data_cache_dir,
+                max_retries=settings.data_max_retries,
+                retry_min_seconds=settings.data_retry_min_seconds,
+                retry_max_seconds=settings.data_retry_max_seconds,
+                use_baostock=settings.data_use_baostock,
+            )
             backtest_summary = backtest_ma_volume_strategy(hist)
         except Exception as exc:
             backtest_summary = {"error": str(exc), "symbol": backtest_symbol}
@@ -74,7 +92,16 @@ def main() -> int:
     backtest_symbol = args.symbol or (feature_table[0]["symbol"] if feature_table else (symbols[0][0] if symbols else "600519"))
 
     try:
-        hist = fetch_daily_history(backtest_symbol, start_date, end_date)
+        hist = fetch_daily_history(
+            backtest_symbol,
+            start_date,
+            end_date,
+            cache_dir=settings.data_cache_dir,
+            max_retries=settings.data_max_retries,
+            retry_min_seconds=settings.data_retry_min_seconds,
+            retry_max_seconds=settings.data_retry_max_seconds,
+            use_baostock=settings.data_use_baostock,
+        )
         backtest_summary = backtest_ma_volume_strategy(hist)
         write_json(day_dir / "backtest_summary.json", {"symbol": backtest_symbol, "summary": backtest_summary})
     except Exception as exc:
@@ -88,6 +115,11 @@ def main() -> int:
             feature_table=feature_table,
             backtest_summary=backtest_summary,
         )
+        if not strategy_code:
+            strategy_code = (
+                "# OpenAI request timed out, so this file is a placeholder.\n"
+                "# Please rerun when network is stable.\n"
+            )
         strategy_path = day_dir / "generated_strategy.py"
         write_text(strategy_path, strategy_code)
 
@@ -105,6 +137,8 @@ def main() -> int:
         feature_table=feature_table,
         backtest_summary=backtest_summary,
     )
+    if not report:
+        report = build_local_report(market_summary, feature_table, backtest_summary, failures)
     if failures:
         report = (
             report

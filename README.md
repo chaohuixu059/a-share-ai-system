@@ -72,6 +72,9 @@ python main.py --mode backtest
 - 主接口失败后会自动尝试备用接口
 - 如果单只股票抓取失败，系统会记录错误并跳过，不会中断整份日报
 - 日报里会明确标注本次数据降级情况
+- `DATA_CACHE_DIR` 可以把历史行情缓存到本地，避免重复抓取
+- `DATA_MAX_RETRIES`、`DATA_RETRY_MIN_SECONDS`、`DATA_RETRY_MAX_SECONDS` 用来控制重试和随机退避
+- `DATA_USE_BAOSTOCK=true` 时会在 AkShare 全部失败后自动切换到 BaoStock 备用源
 
 ## 你可以继续加的能力
 

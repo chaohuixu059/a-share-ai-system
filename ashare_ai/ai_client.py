@@ -22,7 +22,7 @@ def _extract_text(response: Any) -> str:
     return str(response)
 
 
-def generate_report(api_key: str, model: str, market_summary: dict, feature_table: list[dict], backtest_summary: dict | None = None) -> str:
+def generate_report(api_key: str, model: str, market_summary: dict, feature_table: list[dict], backtest_summary: dict | None = None) -> str | None:
     client = _build_client(api_key)
 
     system_prompt = (
@@ -51,17 +51,20 @@ def generate_report(api_key: str, model: str, market_summary: dict, feature_tabl
         )
         return _extract_text(response)
     except Exception:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": str(user_prompt)},
-            ],
-        )
-        return _extract_text(response)
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": str(user_prompt)},
+                ],
+            )
+            return _extract_text(response)
+        except Exception:
+            return None
 
 
-def generate_strategy_code(api_key: str, model: str, feature_table: list[dict], backtest_summary: dict | None = None) -> str:
+def generate_strategy_code(api_key: str, model: str, feature_table: list[dict], backtest_summary: dict | None = None) -> str | None:
     client = _build_client(api_key)
 
     system_prompt = (
@@ -86,11 +89,14 @@ def generate_strategy_code(api_key: str, model: str, feature_table: list[dict], 
         )
         return _extract_text(response)
     except Exception:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": str(user_prompt)},
-            ],
-        )
-        return _extract_text(response)
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": str(user_prompt)},
+                ],
+            )
+            return _extract_text(response)
+        except Exception:
+            return None

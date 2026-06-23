@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import logging
+import random
+import time
 from pathlib import Path
-from typing import Iterable, Callable, Any
+from typing import Callable
 
 import akshare as ak
 import pandas as pd
@@ -24,6 +27,35 @@ def load_watchlist(path: Path, fallback: list[str]) -> list[str]:
         if items:
             return items
     return fallback
+
+
+def _cache_key(prefix: str, *parts: str) -> str:
+    payload = "|".join((prefix, *parts))
+    digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()
+    return digest
+
+
+def _cache_path(cache_dir: Path, prefix: str, *parts: str) -> Path:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir / f"{prefix}_{_cache_key(prefix, *parts)}.csv"
+
+
+def _read_cache(cache_path: Path) -> pd.DataFrame | None:
+    if not cache_path.exists():
+        return None
+    df = pd.read_csv(cache_path)
+    if df.empty:
+        return None
+    return df
+
+
+def _write_cache(cache_path: Path, df: pd.DataFrame) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(cache_path, index=False)
+
+
+def _retry_sleep(min_seconds: float, max_seconds: float) -> None:
+    time.sleep(random.uniform(min_seconds, max_seconds))
 
 
 def _safe_column(df: pd.DataFrame, candidates: list[str]) -> str | None:
@@ -70,6 +102,38 @@ def _with_fallbacks(label: str, loaders: list[tuple[str, Callable[[], pd.DataFra
     raise RuntimeError(f"{label} 所有数据源都失败: {last_error}")
 
 
+def _load_daily_history_from_baostock(symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
+    try:
+        import baostock as bs
+    except Exception as exc:
+        raise RuntimeError(f"BaoStock 未安装: {exc}") from exc
+
+    bs.login()
+    try:
+        bs_code = symbol if symbol.startswith(("sh.", "sz.")) else (f"sh.{symbol}" if symbol.startswith("6") else f"sz.{symbol}")
+        rs = bs.query_history_k_data_plus(
+            bs_code,
+            "date,open,high,low,close,volume,amount",
+            start_date=start_date[:4] + "-" + start_date[4:6] + "-" + start_date[6:],
+            end_date=end_date[:4] + "-" + end_date[4:6] + "-" + end_date[6:],
+            frequency="d",
+            adjustflag="3",
+        )
+        if rs.error_code != "0":
+            raise RuntimeError(rs.error_msg)
+
+        data_list = []
+        while (rs.error_code == "0") and rs.next():
+            data_list.append(rs.get_row_data())
+        if not data_list:
+            raise ValueError("BaoStock 返回空数据")
+
+        df = pd.DataFrame(data_list, columns=rs.fields)
+        return df
+    finally:
+        bs.logout()
+
+
 def fetch_spot_universe(limit: int = 30) -> list[tuple[str, str]]:
     loaders = [
         ("stock_zh_a_spot_em", lambda: ak.stock_zh_a_spot_em()),
@@ -100,7 +164,27 @@ def fetch_spot_universe(limit: int = 30) -> list[tuple[str, str]]:
     return list(out[["symbol", "name"]].itertuples(index=False, name=None))
 
 
-def fetch_daily_history(symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
+def fetch_daily_history(
+    symbol: str,
+    start_date: str,
+    end_date: str,
+    cache_dir: Path | None = None,
+    max_retries: int = 5,
+    retry_min_seconds: float = 2,
+    retry_max_seconds: float = 5,
+    use_baostock: bool = True,
+) -> pd.DataFrame:
+    cache_path = None
+    if cache_dir is not None:
+        cache_path = _cache_path(cache_dir, "daily_history", symbol, start_date, end_date)
+        cached = _read_cache(cache_path)
+        if cached is not None:
+            logger.info("%s 使用本地缓存 %s", symbol, cache_path)
+            normalized = _normalize_history_frame(cached)
+            normalized.attrs["data_source"] = "cache"
+            normalized.attrs["symbol"] = symbol
+            return normalized
+
     loaders: list[tuple[str, Callable[[], pd.DataFrame]]] = [
         (
             "stock_zh_a_hist",
@@ -123,19 +207,62 @@ def fetch_daily_history(symbol: str, start_date: str, end_date: str) -> pd.DataF
         ),
     ]
 
-    df, source_name = _with_fallbacks(f"{symbol} 历史行情", loaders)
-    normalized = _normalize_history_frame(df)
-    normalized.attrs["data_source"] = source_name
-    normalized.attrs["symbol"] = symbol
-    return normalized
+    last_error: Exception | None = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            df, source_name = _with_fallbacks(f"{symbol} 历史行情", loaders)
+            normalized = _normalize_history_frame(df)
+            normalized.attrs["data_source"] = source_name
+            normalized.attrs["symbol"] = symbol
+            if cache_path is not None:
+                _write_cache(cache_path, normalized)
+            return normalized
+        except Exception as exc:
+            last_error = exc
+            logger.warning("%s 第 %s/%s 次获取失败: %s", symbol, attempt, max_retries, exc)
+            if attempt < max_retries:
+                _retry_sleep(retry_min_seconds, retry_max_seconds)
+
+    if use_baostock:
+        try:
+            df = _load_daily_history_from_baostock(symbol, start_date, end_date)
+            normalized = _normalize_history_frame(df)
+            normalized.attrs["data_source"] = "baostock"
+            normalized.attrs["symbol"] = symbol
+            if cache_path is not None:
+                _write_cache(cache_path, normalized)
+            return normalized
+        except Exception as exc:
+            last_error = exc
+            logger.warning("%s BaoStock 备用源失败: %s", symbol, exc)
+
+    raise RuntimeError(f"{symbol} 历史行情所有数据源都失败: {last_error}")
 
 
-def build_market_samples(symbol_pairs: list[tuple[str, str]], start_date: str, end_date: str) -> tuple[list[dict], list[dict]]:
+def build_market_samples(
+    symbol_pairs: list[tuple[str, str]],
+    start_date: str,
+    end_date: str,
+    cache_dir: Path | None = None,
+    max_retries: int = 5,
+    retry_min_seconds: float = 2,
+    retry_max_seconds: float = 5,
+    use_baostock: bool = True,
+) -> tuple[list[dict], list[dict]]:
     snapshots: list[dict] = []
     failures: list[dict] = []
     for symbol, name in symbol_pairs:
         try:
-            hist = fetch_daily_history(symbol, start_date, end_date)
+            hist = fetch_daily_history(
+                symbol,
+                start_date,
+                end_date,
+                cache_dir=cache_dir,
+                max_retries=max_retries,
+                retry_min_seconds=retry_min_seconds,
+                retry_max_seconds=retry_max_seconds,
+                use_baostock=use_baostock,
+            )
             snapshot = latest_snapshot(symbol, name, hist)
             snapshot["data_source"] = hist.attrs.get("data_source", "unknown")
             snapshots.append(snapshot)

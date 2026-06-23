@@ -22,6 +22,11 @@ class Settings:
     universe_limit: int
     lookback_days: int
     report_mode: str
+    data_cache_dir: Path
+    data_max_retries: int
+    data_retry_min_seconds: float
+    data_retry_max_seconds: float
+    data_use_baostock: bool
 
 
 def _split_watchlist(raw: str) -> list[str]:
@@ -32,6 +37,7 @@ def _split_watchlist(raw: str) -> list[str]:
 def load_settings() -> Settings:
     watchlist_file = Path(os.getenv("WATCHLIST_FILE", "watchlist.txt")).expanduser()
     output_dir = Path(os.getenv("OUTPUT_DIR", "outputs")).expanduser()
+    data_cache_dir = Path(os.getenv("DATA_CACHE_DIR", "cache")).expanduser()
     raw_watchlist = os.getenv("WATCHLIST", "")
     watchlist = _split_watchlist(raw_watchlist)
     if not watchlist and watchlist_file.exists():
@@ -53,4 +59,9 @@ def load_settings() -> Settings:
         universe_limit=int(os.getenv("UNIVERSE_LIMIT", "30")),
         lookback_days=int(os.getenv("LOOKBACK_DAYS", "120")),
         report_mode=os.getenv("REPORT_MODE", "daily").strip(),
+        data_cache_dir=data_cache_dir,
+        data_max_retries=int(os.getenv("DATA_MAX_RETRIES", "5")),
+        data_retry_min_seconds=float(os.getenv("DATA_RETRY_MIN_SECONDS", "2")),
+        data_retry_max_seconds=float(os.getenv("DATA_RETRY_MAX_SECONDS", "5")),
+        data_use_baostock=os.getenv("DATA_USE_BAOSTOCK", "true").strip().lower() in {"1", "true", "yes", "y", "on"},
     )

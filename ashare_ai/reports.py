@@ -25,9 +25,68 @@ def build_summary_block(feature_table: list[dict]) -> str:
 
     lines = ["## 观察池", ""]
     for item in feature_table[:10]:
+        data_source = item.get("data_source", "unknown")
         lines.append(
             f"- {item['symbol']} {item['name']} | 收盘 {item['close']} | 5日 {item['ret_5d']:.2%} | "
-            f"20日 {item['ret_20d']:.2%} | 量比 {item['vol_ratio']:.2f} | RSI {item['rsi14']}"
+            f"20日 {item['ret_20d']:.2%} | 量比 {item['vol_ratio']:.2f} | RSI {item['rsi14']} | 源 {data_source}"
         )
     return "\n".join(lines)
 
+
+def build_local_report(market_summary: dict, feature_table: list[dict], backtest_summary: dict | None = None, failures: list[dict] | None = None) -> str:
+    failures = failures or []
+    backtest_summary = backtest_summary or {}
+    top = feature_table[:5]
+
+    lines = [
+        "# A股每日复盘",
+        "",
+        "## 今日结论",
+        "",
+        f"- 本次共抓取 {market_summary.get('success_count', 0)} 只标的，失败 {market_summary.get('failure_count', 0)} 只。",
+        "- 当前环境下若外部数据源或 OpenAI 超时，系统会自动回退到本地模板，保证日报可输出。",
+        "",
+        "## 明日关注池",
+        "",
+    ]
+
+    if top:
+        for item in top:
+            lines.append(
+                f"- {item['symbol']} {item['name']} | 收盘 {item['close']} | 5日 {item['ret_5d']:.2%} | "
+                f"20日 {item['ret_20d']:.2%} | 量比 {item['vol_ratio']:.2f} | 源 {item.get('data_source', 'unknown')}"
+            )
+    else:
+        lines.append("- 暂无可用标的。")
+
+    lines.extend(
+        [
+            "",
+            "## 风险提示",
+            "",
+            "- A股执行遵循 T+1 和涨跌停约束。",
+            "- 任何 AI 生成内容都只用于研究，不应直接用于实盘自动交易。",
+        ]
+    )
+
+    if backtest_summary:
+        lines.extend(
+            [
+                "",
+                "## 回测摘要",
+                "",
+                f"- {json.dumps(backtest_summary, ensure_ascii=False)}",
+            ]
+        )
+
+    if failures:
+        lines.extend(
+            [
+                "",
+                "## 数据降级说明",
+                "",
+                f"- 有 {len(failures)} 个标的抓取失败，已自动跳过。",
+            ]
+        )
+
+    return "\n".join(lines)
