@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from ashare_ai.ai_client import generate_report, generate_strategy_code
 from ashare_ai.backtest import backtest_ma_volume_strategy
 from ashare_ai.config import load_settings
-from ashare_ai.fetchers import build_market_samples, load_watchlist, select_symbols
+from ashare_ai.fetchers import build_market_samples, load_watchlist, select_symbols, fetch_daily_history
 from ashare_ai.notify import send_email, send_webhook
 from ashare_ai.reports import build_summary_block, ensure_day_dir, write_json, write_text
 
@@ -53,6 +53,7 @@ def main() -> int:
         "failure_count": len(failures),
         "failures": failures[:10],
         "summary_block": build_summary_block(feature_table),
+        "fallback_note": "若单个标的抓取失败，系统会自动跳过并继续生成日报。",
     }
 
     write_json(day_dir / "market_summary.json", {"market_summary": market_summary, "feature_table": feature_table})
@@ -60,8 +61,6 @@ def main() -> int:
     if args.mode == "backtest":
         backtest_symbol = args.symbol or (symbols[0][0] if symbols else "600519")
         try:
-            from ashare_ai.fetchers import fetch_daily_history
-
             hist = fetch_daily_history(backtest_symbol, start_date, end_date)
             backtest_summary = backtest_ma_volume_strategy(hist)
         except Exception as exc:
@@ -75,8 +74,6 @@ def main() -> int:
     backtest_symbol = args.symbol or (feature_table[0]["symbol"] if feature_table else (symbols[0][0] if symbols else "600519"))
 
     try:
-        from ashare_ai.fetchers import fetch_daily_history
-
         hist = fetch_daily_history(backtest_symbol, start_date, end_date)
         backtest_summary = backtest_ma_volume_strategy(hist)
         write_json(day_dir / "backtest_summary.json", {"symbol": backtest_symbol, "summary": backtest_summary})
@@ -108,6 +105,13 @@ def main() -> int:
         feature_table=feature_table,
         backtest_summary=backtest_summary,
     )
+    if failures:
+        report = (
+            report
+            + "\n\n## 数据降级说明\n"
+            + f"- 本次有 {len(failures)} 个标的抓取失败，系统已自动跳过。\n"
+            + "- 失败并不会中断日报或通知流程。\n"
+        )
     report_path = day_dir / "daily_report.md"
     write_text(report_path, report)
 

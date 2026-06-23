@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Callable, Any
 
 import akshare as ak
 import pandas as pd
 
 from .features import latest_snapshot
+
+
+logger = logging.getLogger(__name__)
 
 
 def yyyymmdd(value: dt.date) -> str:
@@ -29,9 +33,51 @@ def _safe_column(df: pd.DataFrame, candidates: list[str]) -> str | None:
     return None
 
 
+def _normalize_history_frame(df: pd.DataFrame) -> pd.DataFrame:
+    rename_map = {
+        "日期": "date",
+        "时间": "date",
+        "开盘": "open",
+        "收盘": "close",
+        "最高": "high",
+        "最低": "low",
+        "成交量": "volume",
+        "成交额": "amount",
+        "换手率": "turnover",
+    }
+    out = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns}).copy()
+    if "date" not in out.columns:
+        raise ValueError("历史行情缺少日期列")
+    out["date"] = pd.to_datetime(out["date"])
+    for col in ["open", "close", "high", "low", "volume", "amount", "turnover"]:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+    return out.sort_values("date").reset_index(drop=True)
+
+
+def _with_fallbacks(label: str, loaders: list[tuple[str, Callable[[], pd.DataFrame]]]) -> tuple[pd.DataFrame, str]:
+    last_error: Exception | None = None
+    for source_name, loader in loaders:
+        try:
+            df = loader()
+            if df is None or df.empty:
+                raise ValueError(f"{source_name} 返回空数据")
+            logger.info("%s 使用数据源 %s", label, source_name)
+            return df, source_name
+        except Exception as exc:
+            last_error = exc
+            logger.warning("%s 数据源 %s 失败: %s", label, source_name, exc)
+    raise RuntimeError(f"{label} 所有数据源都失败: {last_error}")
+
+
 def fetch_spot_universe(limit: int = 30) -> list[tuple[str, str]]:
+    loaders = [
+        ("stock_zh_a_spot_em", lambda: ak.stock_zh_a_spot_em()),
+        ("stock_zh_a_spot", lambda: ak.stock_zh_a_spot()),
+    ]
+
     try:
-        spot = ak.stock_zh_a_spot_em()
+        spot, _ = _with_fallbacks("A股全市场行情", loaders)
     except Exception:
         return []
 
@@ -55,16 +101,33 @@ def fetch_spot_universe(limit: int = 30) -> list[tuple[str, str]]:
 
 
 def fetch_daily_history(symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
-    df = ak.stock_zh_a_hist(
-        symbol=symbol,
-        period="daily",
-        start_date=start_date,
-        end_date=end_date,
-        adjust="qfq",
-    )
-    if df.empty:
-        raise ValueError(f"{symbol} 没有返回历史数据")
-    return df
+    loaders: list[tuple[str, Callable[[], pd.DataFrame]]] = [
+        (
+            "stock_zh_a_hist",
+            lambda: ak.stock_zh_a_hist(
+                symbol=symbol,
+                period="daily",
+                start_date=start_date,
+                end_date=end_date,
+                adjust="qfq",
+            ),
+        ),
+        (
+            "stock_zh_a_hist_tx",
+            lambda: ak.stock_zh_a_hist_tx(
+                symbol=symbol,
+                start_date=start_date,
+                end_date=end_date,
+                adjust="qfq",
+            ),
+        ),
+    ]
+
+    df, source_name = _with_fallbacks(f"{symbol} 历史行情", loaders)
+    normalized = _normalize_history_frame(df)
+    normalized.attrs["data_source"] = source_name
+    normalized.attrs["symbol"] = symbol
+    return normalized
 
 
 def build_market_samples(symbol_pairs: list[tuple[str, str]], start_date: str, end_date: str) -> tuple[list[dict], list[dict]]:
@@ -73,7 +136,9 @@ def build_market_samples(symbol_pairs: list[tuple[str, str]], start_date: str, e
     for symbol, name in symbol_pairs:
         try:
             hist = fetch_daily_history(symbol, start_date, end_date)
-            snapshots.append(latest_snapshot(symbol, name, hist))
+            snapshot = latest_snapshot(symbol, name, hist)
+            snapshot["data_source"] = hist.attrs.get("data_source", "unknown")
+            snapshots.append(snapshot)
         except Exception as exc:
             failures.append({"symbol": symbol, "name": name, "error": str(exc)})
     return snapshots, failures
