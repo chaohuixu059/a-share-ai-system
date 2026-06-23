@@ -70,7 +70,6 @@ def enrich_indicators(df: pd.DataFrame) -> pd.DataFrame:
 def latest_snapshot(symbol: str, name: str, df: pd.DataFrame) -> dict[str, Any]:
     frame = enrich_indicators(normalize_hist_frame(df))
     latest = frame.iloc[-1]
-    prev = frame.iloc[-2] if len(frame) >= 2 else latest
     close = float(latest["close"])
     ret_5d = float(latest.get("ret_5d", 0.0) or 0.0)
     ret_20d = float(latest.get("ret_20d", 0.0) or 0.0)

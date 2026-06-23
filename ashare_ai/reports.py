@@ -90,3 +90,17 @@ def build_local_report(market_summary: dict, feature_table: list[dict], backtest
         )
 
     return "\n".join(lines)
+
+
+def build_pick_report(picked_stocks: list[dict]) -> str:
+    if not picked_stocks:
+        return "暂无符合条件的选股结果。"
+
+    lines = ["## 选股结果", ""]
+    for item in picked_stocks:
+        reasons = "、".join(item.get("picker_reasons", []))
+        lines.append(
+            f"- {item['symbol']} {item['name']} | 评分 {item.get('picker_score', 0):.2f} | "
+            f"收盘 {item['close']} | 5日 {item['ret_5d']:.2%} | 20日 {item['ret_20d']:.2%} | 理由：{reasons}"
+        )
+    return "\n".join(lines)

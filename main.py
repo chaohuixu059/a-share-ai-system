@@ -12,7 +12,8 @@ from ashare_ai.backtest import backtest_ma_volume_strategy
 from ashare_ai.config import load_settings
 from ashare_ai.fetchers import build_market_samples, load_watchlist, select_symbols, fetch_daily_history
 from ashare_ai.notify import send_email, send_webhook
-from ashare_ai.reports import build_local_report, build_summary_block, ensure_day_dir, write_json, write_text
+from ashare_ai.reports import build_local_report, build_pick_report, build_summary_block, ensure_day_dir, write_json, write_text
+from ashare_ai.stock_picker import pick_stocks
 
 
 def parse_args() -> argparse.Namespace:
@@ -52,6 +53,7 @@ def main() -> int:
         use_baostock=settings.data_use_baostock,
     )
     feature_table = sorted(snapshots, key=lambda item: item["score"], reverse=True)
+    picked_stocks = pick_stocks(feature_table, top_n=min(5, len(feature_table)))
 
     market_summary = {
         "date": today.isoformat(),
@@ -62,10 +64,11 @@ def main() -> int:
         "failure_count": len(failures),
         "failures": failures[:10],
         "summary_block": build_summary_block(feature_table),
+        "pick_report": build_pick_report(picked_stocks),
         "fallback_note": "若单个标的抓取失败，系统会自动跳过并继续生成日报。",
     }
 
-    write_json(day_dir / "market_summary.json", {"market_summary": market_summary, "feature_table": feature_table})
+    write_json(day_dir / "market_summary.json", {"market_summary": market_summary, "feature_table": feature_table, "picked_stocks": picked_stocks})
 
     if args.mode == "backtest":
         backtest_symbol = args.symbol or (symbols[0][0] if symbols else "600519")
@@ -139,13 +142,8 @@ def main() -> int:
     )
     if not report:
         report = build_local_report(market_summary, feature_table, backtest_summary, failures)
-    if failures:
-        report = (
-            report
-            + "\n\n## 数据降级说明\n"
-            + f"- 本次有 {len(failures)} 个标的抓取失败，系统已自动跳过。\n"
-            + "- 失败并不会中断日报或通知流程。\n"
-        )
+    if picked_stocks:
+        report = report + "\n\n" + build_pick_report(picked_stocks)
     report_path = day_dir / "daily_report.md"
     write_text(report_path, report)
 
