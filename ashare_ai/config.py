@@ -30,8 +30,8 @@ def _split_watchlist(raw: str) -> list[str]:
 
 
 def load_settings() -> Settings:
-    watchlist_file = Path(os.getenv("WATCHLIST_FILE", "watchlist.txt"))
-    output_dir = Path(os.getenv("OUTPUT_DIR", "outputs"))
+    watchlist_file = Path(os.getenv("WATCHLIST_FILE", "watchlist.txt")).expanduser()
+    output_dir = Path(os.getenv("OUTPUT_DIR", "outputs")).expanduser()
     raw_watchlist = os.getenv("WATCHLIST", "")
     watchlist = _split_watchlist(raw_watchlist)
     if not watchlist and watchlist_file.exists():

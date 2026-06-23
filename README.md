@@ -50,6 +50,8 @@ python main.py --mode backtest
 - `outputs/YYYY-MM-DD/market_summary.json`
 - `outputs/YYYY-MM-DD/generated_strategy.py` 或 `backtest_summary.json`
 
+如果你把 `OUTPUT_DIR` 设成桌面路径，比如 `~/Desktop/a-share-ai-system-output`，文件就会直接出现在桌面下面。
+
 ## GitHub Actions
 
 已放好 `.github/workflows/daily_analysis.yml`。你只需要：
