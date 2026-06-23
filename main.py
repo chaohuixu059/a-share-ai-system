@@ -9,10 +9,11 @@ from dotenv import load_dotenv
 
 from ashare_ai.ai_client import generate_report, generate_strategy_code
 from ashare_ai.backtest import backtest_ma_volume_strategy
+from ashare_ai.dashboard import build_dashboard_html, write_dashboard_html
 from ashare_ai.config import load_settings
-from ashare_ai.fetchers import build_market_samples, load_watchlist, select_symbols, fetch_daily_history
+from ashare_ai.fetchers import build_market_samples, build_flow_snapshot, load_watchlist, select_symbols, fetch_daily_history
 from ashare_ai.notify import send_email, send_webhook
-from ashare_ai.reports import build_local_report, build_pick_report, build_summary_block, ensure_day_dir, write_json, write_text
+from ashare_ai.reports import build_action_plan_block, build_dashboard_report, build_local_report, build_pick_report, build_summary_block, ensure_day_dir, write_json, write_text
 from ashare_ai.stock_picker import pick_stocks, export_picks_csv
 
 
@@ -56,11 +57,14 @@ def main() -> int:
         use_baostock=settings.data_use_baostock,
     )
     feature_table = sorted(snapshots, key=lambda item: item["score"], reverse=True)
+    flow_snapshot = build_flow_snapshot()
     picked_stocks = pick_stocks(
         feature_table,
         top_n=min(settings.pick_top_n, len(feature_table)),
         sector_keywords=settings.preferred_sector_keywords,
         sector_boost=settings.sector_boost,
+        sector_keyword_weights=settings.sector_keyword_weights,
+        sector_keyword_aliases=settings.sector_keyword_aliases,
     )
     export_picks_csv(picked_stocks, settings.pick_export_csv)
 
@@ -77,7 +81,10 @@ def main() -> int:
         "fallback_note": "若单个标的抓取失败，系统会自动跳过并继续生成日报。",
         "universe_mode": settings.universe_mode,
         "pick_export_csv": str(settings.pick_export_csv),
+        "output_dir": str(settings.output_dir),
+        "flow_snapshot": flow_snapshot,
     }
+    market_summary["flow_snapshot"] = flow_snapshot
 
     write_json(day_dir / "market_summary.json", {"market_summary": market_summary, "feature_table": feature_table, "picked_stocks": picked_stocks})
 
@@ -155,15 +162,36 @@ def main() -> int:
         report = build_local_report(market_summary, feature_table, backtest_summary, failures)
     if picked_stocks:
         report = report + "\n\n" + build_pick_report(picked_stocks)
+    report = report + "\n\n" + build_action_plan_block(market_summary, picked_stocks)
     report = report + f"\n\n## 导出文件\n\n- 候选股 CSV: `{settings.pick_export_csv}`"
     report_path = day_dir / "daily_report.md"
     write_text(report_path, report)
+    latest_report_path = settings.output_dir / "latest_daily_report.md"
+    dashboard_path = settings.output_dir / "latest_dashboard.md"
+    dashboard_html_path = settings.output_dir / "latest_dashboard.html"
+    write_text(latest_report_path, report)
+    dashboard_report = build_dashboard_report(
+        market_summary,
+        feature_table,
+        picked_stocks,
+        backtest_summary=backtest_summary,
+        failures=failures,
+        output_path=dashboard_path,
+    )
+    dashboard_html = build_dashboard_html(
+        market_summary,
+        feature_table,
+        picked_stocks,
+        backtest_summary=backtest_summary,
+        failures=failures,
+    )
+    write_dashboard_html(dashboard_html_path, dashboard_html)
 
-    notify_text = f"{market_summary['summary_block']}\n\n{report[:1500]}"
+    notify_text = f"{market_summary['summary_block']}\n\n{dashboard_report[:1500]}"
     send_webhook(settings.notify_provider, settings.notify_webhook_url, "A股每日复盘", notify_text)
     send_email(settings.smtp_host, settings.smtp_port, settings.smtp_user, settings.smtp_password, settings.smtp_to, "A股每日复盘", notify_text)
 
-    print(report)
+    print(dashboard_report)
     return 0
 
 

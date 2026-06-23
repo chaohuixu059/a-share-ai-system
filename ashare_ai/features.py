@@ -74,7 +74,10 @@ def latest_snapshot(symbol: str, name: str, df: pd.DataFrame) -> dict[str, Any]:
     ret_5d = float(latest.get("ret_5d", 0.0) or 0.0)
     ret_20d = float(latest.get("ret_20d", 0.0) or 0.0)
     trend_gap = float((latest.get("ma5", close) - latest.get("ma20", close)) / close) if close else 0.0
-    volume_ratio = float(latest.get("vol_ratio", 1.0) or 1.0)
+    raw_volume_ratio = latest.get("vol_ratio", 1.0)
+    volume_ratio = float(raw_volume_ratio) if pd.notna(raw_volume_ratio) else 1.0
+    if not volume_ratio or volume_ratio != volume_ratio:
+        volume_ratio = 1.0
     rsi = float(latest.get("rsi14", 50.0) or 50.0)
     score = round((ret_5d * 100) * 0.35 + (ret_20d * 100) * 0.25 + trend_gap * 100 * 0.25 + (volume_ratio - 1) * 10 * 0.15, 4)
     return {

@@ -98,6 +98,49 @@ def _normalize_baostock_code(symbol: str) -> str:
     return f"{market}.{clean}"
 
 
+def _safe_fund_flow_loader(loader: Callable[[], pd.DataFrame]) -> pd.DataFrame | None:
+    try:
+        df = loader()
+        if df is None or df.empty:
+            return None
+        return df
+    except Exception as exc:
+        logger.warning("资金流接口失败: %s", exc)
+        return None
+
+
+def build_flow_snapshot() -> dict:
+    snapshot: dict[str, object] = {
+        "market_flow": [],
+        "industry_flow": [],
+        "concept_flow": [],
+        "northbound_flow": None,
+        "main_fund_flow": [],
+    }
+
+    market_df = _safe_fund_flow_loader(lambda: ak.stock_market_fund_flow())
+    if market_df is not None:
+        snapshot["market_flow"] = market_df.head(5).fillna("").to_dict(orient="records")
+
+    industry_df = _safe_fund_flow_loader(lambda: ak.stock_sector_fund_flow_rank(indicator="今日", sector_type="行业资金流"))
+    if industry_df is not None:
+        snapshot["industry_flow"] = industry_df.head(8).fillna("").to_dict(orient="records")
+
+    concept_df = _safe_fund_flow_loader(lambda: ak.stock_sector_fund_flow_rank(indicator="今日", sector_type="概念资金流"))
+    if concept_df is not None:
+        snapshot["concept_flow"] = concept_df.head(8).fillna("").to_dict(orient="records")
+
+    northbound_df = _safe_fund_flow_loader(lambda: ak.stock_hsgt_fund_flow_summary_em())
+    if northbound_df is not None:
+        snapshot["northbound_flow"] = northbound_df.fillna("").to_dict(orient="records")
+
+    main_flow_df = _safe_fund_flow_loader(lambda: ak.stock_main_fund_flow(symbol="全部股票"))
+    if main_flow_df is not None:
+        snapshot["main_fund_flow"] = main_flow_df.head(10).fillna("").to_dict(orient="records")
+
+    return snapshot
+
+
 def _with_fallbacks(label: str, loaders: list[tuple[str, Callable[[], pd.DataFrame]]]) -> tuple[pd.DataFrame, str]:
     last_error: Exception | None = None
     for source_name, loader in loaders:

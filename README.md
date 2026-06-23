@@ -51,6 +51,8 @@ python main.py --mode backtest
 - `outputs/YYYY-MM-DD/generated_strategy.py` 或 `backtest_summary.json`
 
 如果你把 `OUTPUT_DIR` 设成桌面路径，比如 `~/Desktop/a-share-ai-system-output`，文件就会直接出现在桌面下面。
+如果你想强制把最新日报单独输出到桌面，只要把 `DESKTOP_OUTPUT=true` 打开即可；程序会额外生成 `latest_daily_report.md`，方便你每天直接查看最新结果。
+如果你还想直接打开网页版本，可以看 `latest_dashboard.html`，它是本地生成的静态仪表盘页面。
 
 ## GitHub Actions
 
@@ -82,6 +84,9 @@ python main.py --mode backtest
 - `PREFERRED_SECTOR_KEYWORDS` 会给科技、电子、半导体等偏好板块加分
 - `PICK_TOP_N` 控制最终展示的候选数量
 - `PICK_EXPORT_CSV` 会把候选股导出成单独的 CSV 文件，便于你直接查看
+- `SECTOR_KEYWORD_WEIGHTS` 支持给半导体、算力、光模块等细分赛道单独加权
+- `SECTOR_KEYWORD_ALIASES` 支持把一个赛道扩展成多个关键词，适合做半导体设备、AI服务器、光通信这种更细颗粒度的偏好
+- `OPEN_DASHBOARD_HTML=true` 会额外生成可直接在浏览器打开的 HTML 仪表盘
 
 ## 你可以继续加的能力
 
