@@ -2,7 +2,9 @@ name: Daily A-Share AI Analysis
 
 on:
   schedule:
-    - cron: '0 8 * * 1-5'
+    - cron: '0 1 * * *' # 北京时间 09:00
+    - cron: '0 5 * * *' # 北京时间 13:00
+    - cron: '0 7 * * *' # 北京时间 15:00
   workflow_dispatch:
 
 jobs:
@@ -27,7 +29,23 @@ jobs:
           OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
           WATCHLIST: ${{ secrets.WATCHLIST }}
           WATCHLIST_FILE: watchlist.txt
+          DESKTOP_OUTPUT: "false"
           OUTPUT_DIR: outputs
+          DATA_USE_TUSHARE: ${{ secrets.DATA_USE_TUSHARE }}
+          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
           NOTIFY_PROVIDER: ${{ secrets.NOTIFY_PROVIDER }}
           NOTIFY_WEBHOOK_URL: ${{ secrets.NOTIFY_WEBHOOK_URL }}
         run: python main.py
+
+      - name: Upload outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: a-share-ai-output
+          path: |
+            outputs/latest_dashboard.html
+            outputs/latest_dashboard.md
+            outputs/latest_daily_report.md
+            outputs/picked_stocks.csv
+            outputs/**/daily_report.md
+            outputs/**/market_summary.json
+            outputs/**/backtest_summary.json

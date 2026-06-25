@@ -12,6 +12,10 @@ import akshare as ak
 import pandas as pd
 
 from .features import latest_snapshot
+from .tushare_client import TusharePermissionError
+from .tushare_client import is_tushare_unavailable, mark_tushare_unavailable
+from .tushare_client import load_daily_history as load_tushare_daily_history
+from .tushare_client import load_spot_universe_frame, load_symbol_name_map as load_tushare_symbol_name_map
 
 
 logger = logging.getLogger(__name__)
@@ -87,6 +91,16 @@ def _normalize_history_frame(df: pd.DataFrame) -> pd.DataFrame:
             out[col] = pd.to_numeric(out[col], errors="coerce")
     if "volume" not in out.columns:
         out["volume"] = 0.0
+    volume = pd.to_numeric(out["volume"], errors="coerce")
+    amount = pd.to_numeric(out["amount"], errors="coerce") if "amount" in out.columns else pd.Series(index=out.index, dtype="float64")
+    close = pd.to_numeric(out["close"], errors="coerce") if "close" in out.columns else pd.Series(index=out.index, dtype="float64")
+    if not amount.empty and not close.empty:
+        close = close.replace(0, pd.NA)
+        proxy_volume = amount / close
+        fill_mask = volume.isna() | (volume <= 0)
+        if fill_mask.any():
+            volume = volume.where(~fill_mask, proxy_volume)
+    out["volume"] = pd.to_numeric(volume, errors="coerce").fillna(0.0)
     return out.sort_values("date").reset_index(drop=True)
 
 
@@ -96,6 +110,14 @@ def _normalize_baostock_code(symbol: str) -> str:
         clean = clean[2:]
     market = "sh" if clean.startswith("6") else "sz"
     return f"{market}.{clean}"
+
+
+def _normalize_tx_symbol(symbol: str) -> str:
+    clean = _normalize_symbol(symbol)
+    if not clean:
+        return symbol.strip()
+    market = "sh" if clean.startswith("6") else "sz"
+    return f"{market}{clean}"
 
 
 def _safe_fund_flow_loader(loader: Callable[[], pd.DataFrame]) -> pd.DataFrame | None:
@@ -162,7 +184,9 @@ def _load_daily_history_from_baostock(symbol: str, start_date: str, end_date: st
     except Exception as exc:
         raise RuntimeError(f"BaoStock 未安装: {exc}") from exc
 
-    bs.login()
+    login_result = bs.login()
+    if getattr(login_result, "error_code", "1") != "0":
+        raise RuntimeError(f"BaoStock 登录失败: {getattr(login_result, 'error_msg', 'unknown')}")
     try:
         bs_code = _normalize_baostock_code(symbol)
         rs = bs.query_history_k_data_plus(
@@ -188,6 +212,66 @@ def _load_daily_history_from_baostock(symbol: str, start_date: str, end_date: st
         bs.logout()
 
 
+def _normalize_symbol(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = text.replace(".SH", "").replace(".SZ", "").replace(".sh", "").replace(".sz", "")
+    text = text.replace("sh", "").replace("sz", "") if len(text) > 2 and text[:2].lower() in {"sh", "sz"} else text
+    return text
+
+
+def _load_symbol_name_map() -> dict[str, str]:
+    loaders = [
+        ("stock_info_a_code_name", lambda: ak.stock_info_a_code_name()),
+        ("stock_zh_a_spot_em", lambda: ak.stock_zh_a_spot_em()),
+        ("stock_zh_a_spot", lambda: ak.stock_zh_a_spot()),
+    ]
+    for _, loader in loaders:
+        try:
+            df = loader()
+            if df is None or df.empty:
+                continue
+            code_col = _safe_column(df, ["代码", "证券代码", "symbol"])
+            name_col = _safe_column(df, ["名称", "证券简称", "name"])
+            if not code_col or not name_col:
+                continue
+            out: dict[str, str] = {}
+            for code, name in df[[code_col, name_col]].itertuples(index=False, name=None):
+                norm = _normalize_symbol(code)
+                clean_name = str(name).strip()
+                if norm and clean_name and norm not in out:
+                    out[norm] = clean_name
+            if out:
+                return out
+        except Exception:
+            continue
+    return {}
+
+
+def _load_symbol_name_map_tushare() -> dict[str, str]:
+    try:
+        return load_tushare_symbol_name_map()
+    except Exception as exc:
+        logger.warning("Tushare 名称映射加载失败: %s", exc)
+        return {}
+
+
+def _resolve_symbol_name(symbol: str, fallback_name: str | None = None, name_map: dict[str, str] | None = None) -> str:
+    name_map = name_map or {}
+    clean_symbol = _normalize_symbol(symbol)
+    candidates = [fallback_name, name_map.get(clean_symbol)]
+    if clean_symbol.isdigit() and len(clean_symbol) == 6:
+        candidates.append(name_map.get(clean_symbol.zfill(6)))
+    if fallback_name and fallback_name != clean_symbol and not str(fallback_name).isdigit():
+        candidates.insert(0, fallback_name)
+    for candidate in candidates:
+        text = str(candidate or "").strip()
+        if text and text != clean_symbol and not text.isdigit():
+            return text
+    return clean_symbol or str(fallback_name or symbol)
+
+
 def fetch_spot_universe(limit: int = 30) -> list[tuple[str, str]]:
     loaders = [
         ("stock_zh_a_spot_em", lambda: ak.stock_zh_a_spot_em()),
@@ -197,25 +281,80 @@ def fetch_spot_universe(limit: int = 30) -> list[tuple[str, str]]:
     try:
         spot, _ = _with_fallbacks("A股全市场行情", loaders)
     except Exception:
+        spot = pd.DataFrame()
+
+    if spot is not None and not spot.empty:
+        symbol_col = _safe_column(spot, ["代码", "symbol"])
+        name_col = _safe_column(spot, ["名称", "name"])
+        volume_col = _safe_column(spot, ["成交额", "成交量", "amount", "volume"])
+        if symbol_col:
+            name_map = _load_symbol_name_map()
+            columns = [symbol_col] + ([name_col] if name_col else []) + ([volume_col] if volume_col else [])
+            out = spot[columns].copy()
+            out = out.rename(columns={symbol_col: "symbol"})
+            if name_col:
+                out = out.rename(columns={name_col: "name"})
+            else:
+                out["name"] = ""
+            out["symbol"] = out["symbol"].astype(str).map(_normalize_symbol)
+            out["name"] = [
+                _resolve_symbol_name(symbol, name if name_col else None, name_map)
+                for symbol, name in zip(out["symbol"], out["name"])
+            ]
+            out = out[(out["symbol"] != "") & ~out["name"].astype(str).str.contains("ST|退市", regex=True, na=False)]
+
+            if volume_col:
+                out[volume_col] = pd.to_numeric(out[volume_col], errors="coerce").fillna(0)
+                out = out.sort_values(volume_col, ascending=False)
+
+            out = out.head(limit)
+            return list(out[["symbol", "name"]].itertuples(index=False, name=None))
+
+    try:
+        tushare_universe = load_spot_universe_frame(limit=limit)
+    except Exception as exc:
+        if isinstance(exc, TusharePermissionError):
+            mark_tushare_unavailable(str(exc))
+        logger.warning("Tushare 全市场股票池失败: %s", exc)
+        tushare_universe = pd.DataFrame()
+
+    if tushare_universe is not None and not tushare_universe.empty:
+        symbol_col = _safe_column(tushare_universe, ["symbol", "ts_code", "代码"])
+        name_col = _safe_column(tushare_universe, ["name", "名称", "股票简称"])
+        if symbol_col and name_col:
+            out = tushare_universe[[symbol_col, name_col]].copy()
+            out = out.rename(columns={symbol_col: "symbol", name_col: "name"})
+            out["symbol"] = out["symbol"].astype(str).map(_normalize_symbol)
+            out["name"] = out["name"].astype(str).str.strip()
+            out = out[(out["symbol"] != "") & ~out["name"].astype(str).str.contains("ST|退市", regex=True, na=False)]
+            out = out.head(limit)
+            return list(out[["symbol", "name"]].itertuples(index=False, name=None))
+
+    return []
+
+
+def build_symbol_name_lookup(limit: int = 5000) -> dict[str, str]:
+    lookup = _load_symbol_name_map()
+    if lookup:
+        return lookup
+
+    tushare_lookup = _load_symbol_name_map_tushare()
+    if tushare_lookup:
+        return tushare_lookup
+
+    universe = fetch_spot_universe(limit=limit)
+    return {symbol: name for symbol, name in universe if symbol and name}
+
+
+def enrich_symbol_names(symbol_pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    if not symbol_pairs:
         return []
-
-    symbol_col = _safe_column(spot, ["代码", "symbol"])
-    name_col = _safe_column(spot, ["名称", "name"])
-    volume_col = _safe_column(spot, ["成交额", "成交量", "amount", "volume"])
-    if not symbol_col or not name_col:
-        return []
-
-    out = spot[[symbol_col, name_col] + ([volume_col] if volume_col else [])].copy()
-    out = out.rename(columns={symbol_col: "symbol", name_col: "name"})
-    out["name"] = out["name"].astype(str)
-    out = out[~out["name"].str.contains("ST|退市", regex=True, na=False)]
-
-    if volume_col:
-        out[volume_col] = pd.to_numeric(out[volume_col], errors="coerce").fillna(0)
-        out = out.sort_values(volume_col, ascending=False)
-
-    out = out.head(limit)
-    return list(out[["symbol", "name"]].itertuples(index=False, name=None))
+    lookup = build_symbol_name_lookup()
+    enriched: list[tuple[str, str]] = []
+    for symbol, name in symbol_pairs:
+        resolved_name = _resolve_symbol_name(symbol, name, lookup)
+        enriched.append((_normalize_symbol(symbol), resolved_name))
+    return enriched
 
 
 def fetch_daily_history(
@@ -227,7 +366,9 @@ def fetch_daily_history(
     retry_min_seconds: float = 2,
     retry_max_seconds: float = 5,
     use_baostock: bool = True,
+    use_tushare: bool = True,
 ) -> pd.DataFrame:
+    symbol = _normalize_symbol(symbol) or symbol.strip()
     cache_path = None
     if cache_dir is not None:
         cache_path = _cache_path(cache_dir, "daily_history", symbol, start_date, end_date)
@@ -253,13 +394,22 @@ def fetch_daily_history(
         (
             "stock_zh_a_hist_tx",
             lambda: ak.stock_zh_a_hist_tx(
-                symbol=symbol,
+                symbol=_normalize_tx_symbol(symbol),
                 start_date=start_date,
                 end_date=end_date,
                 adjust="qfq",
             ),
         ),
     ]
+
+    if use_baostock:
+        loaders.append(("baostock", lambda: _load_daily_history_from_baostock(symbol, start_date, end_date)))
+
+    if use_tushare:
+        loaders.append(("tushare", lambda: load_tushare_daily_history(symbol, start_date, end_date)))
+
+    if is_tushare_unavailable():
+        loaders = [item for item in loaders if item[0] != "tushare"]
 
     last_error: Exception | None = None
     for attempt in range(1, max_retries + 1):
@@ -273,22 +423,12 @@ def fetch_daily_history(
             return normalized
         except Exception as exc:
             last_error = exc
+            if isinstance(exc, TusharePermissionError):
+                use_tushare = False
+                mark_tushare_unavailable(str(exc))
             logger.warning("%s 第 %s/%s 次获取失败: %s", symbol, attempt, max_retries, exc)
             if attempt < max_retries:
                 _retry_sleep(retry_min_seconds, retry_max_seconds)
-
-    if use_baostock:
-        try:
-            df = _load_daily_history_from_baostock(symbol, start_date, end_date)
-            normalized = _normalize_history_frame(df)
-            normalized.attrs["data_source"] = "baostock"
-            normalized.attrs["symbol"] = symbol
-            if cache_path is not None:
-                _write_cache(cache_path, normalized)
-            return normalized
-        except Exception as exc:
-            last_error = exc
-            logger.warning("%s BaoStock 备用源失败: %s", symbol, exc)
 
     raise RuntimeError(f"{symbol} 历史行情所有数据源都失败: {last_error}")
 
@@ -302,10 +442,11 @@ def build_market_samples(
     retry_min_seconds: float = 2,
     retry_max_seconds: float = 5,
     use_baostock: bool = True,
+    use_tushare: bool = True,
 ) -> tuple[list[dict], list[dict]]:
     snapshots: list[dict] = []
     failures: list[dict] = []
-    for symbol, name in symbol_pairs:
+    for symbol, name in enrich_symbol_names(symbol_pairs):
         try:
             hist = fetch_daily_history(
                 symbol,
@@ -316,6 +457,7 @@ def build_market_samples(
                 retry_min_seconds=retry_min_seconds,
                 retry_max_seconds=retry_max_seconds,
                 use_baostock=use_baostock,
+                use_tushare=use_tushare,
             )
             snapshot = latest_snapshot(symbol, name, hist)
             snapshot["data_source"] = hist.attrs.get("data_source", "unknown")
@@ -326,11 +468,27 @@ def build_market_samples(
 
 
 def select_symbols(watchlist: list[str], limit: int) -> list[tuple[str, str]]:
+    limit = max(1, int(limit or 1))
+    fallback = [
+        ("600519", "贵州茅台"),
+        ("000001", "平安银行"),
+        ("300750", "宁德时代"),
+        ("601318", "中国平安"),
+        ("600036", "招商银行"),
+        ("601166", "兴业银行"),
+        ("000858", "五粮液"),
+        ("002594", "比亚迪"),
+        ("601398", "工商银行"),
+        ("002475", "立讯精密"),
+    ]
     if watchlist:
-        return [(symbol, symbol) for symbol in watchlist[:limit]]
+        resolved = enrich_symbol_names([(symbol, symbol) for symbol in watchlist])
+        if resolved:
+            return resolved[:limit]
+        return fallback[:limit]
 
-    universe = fetch_spot_universe(limit=limit)
+    universe = fetch_spot_universe(limit=max(limit, 300))
     if universe:
-        return universe
+        return universe[:limit]
 
-    return [("600519", "600519"), ("000001", "000001"), ("300750", "300750")]
+    return fallback[:limit]
